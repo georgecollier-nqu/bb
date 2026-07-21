@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   usePromptDraftInputThreadIds,
   usePromptDraftStorage,
@@ -64,6 +64,38 @@ describe("usePromptDraftStorage", () => {
 
     act(() => result.current.draft.clear());
     expect([...result.current.inputThreadIds]).toEqual([]);
+  });
+
+  it("checks only the changed thread when draft text updates", () => {
+    const projectId = "proj-batch-draft-performance";
+    const threadRefs = Array.from({ length: 100 }, (_, index) => ({
+      id: `thr-batch-performance-${index}`,
+      projectId,
+    }));
+    const getItem = vi.spyOn(Storage.prototype, "getItem");
+    const { result } = renderHook(() => ({
+      draft: usePromptDraftStorage({
+        kind: "thread",
+        projectId,
+        threadId: threadRefs[50]!.id,
+      }),
+      inputThreadIds: usePromptDraftInputThreadIds(threadRefs),
+    }));
+    getItem.mockClear();
+
+    act(() => result.current.draft.setTextAndMentions("a", []));
+
+    expect(getItem).toHaveBeenCalledTimes(1);
+    expect(getItem).toHaveBeenCalledWith(
+      "bb.promptbox.contents-proj-batch-draft-performance-thr-batch-performance-50-3",
+    );
+    expect([...result.current.inputThreadIds]).toEqual([threadRefs[50]!.id]);
+
+    getItem.mockClear();
+    act(() => result.current.draft.setTextAndMentions("ab", []));
+
+    expect(getItem).not.toHaveBeenCalled();
+    expect([...result.current.inputThreadIds]).toEqual([threadRefs[50]!.id]);
   });
 
   it("uses project-agnostic storage for new-thread prompt contents", () => {

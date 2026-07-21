@@ -426,11 +426,63 @@ interface PromptDraftThreadSubscription {
   threadId: string;
 }
 
+interface PromptDraftPresenceStore {
+  getSnapshot: () => string;
+  subscribe: (listener: PromptDraftListener) => () => void;
+}
+
+function createPromptDraftPresenceStore(
+  subscriptions: readonly PromptDraftThreadSubscription[],
+): PromptDraftPresenceStore {
+  const presence = subscriptions.map(({ storageKey }) =>
+    isPromptDraftEmpty(readPromptDraft(storageKey)) ? "0" : "1",
+  );
+  let snapshot = presence.join("");
+
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      const unsubscribe = subscriptions.map(({ storageKey }, index) =>
+        subscribePromptDraft(storageKey, () => {
+          const nextPresence = isPromptDraftEmpty(readPromptDraft(storageKey))
+            ? "0"
+            : "1";
+          if (presence[index] === nextPresence) return;
+
+          presence[index] = nextPresence;
+          snapshot = presence.join("");
+          listener();
+        }),
+      );
+
+      // Reconcile after subscribing so a storage change between render and
+      // commit cannot leave this store with a stale initial snapshot.
+      let didPresenceChange = false;
+      for (const [index, { storageKey }] of subscriptions.entries()) {
+        const nextPresence = isPromptDraftEmpty(readPromptDraft(storageKey))
+          ? "0"
+          : "1";
+        if (presence[index] === nextPresence) continue;
+        presence[index] = nextPresence;
+        didPresenceChange = true;
+      }
+      if (didPresenceChange) snapshot = presence.join("");
+
+      return () => {
+        for (const stopListening of unsubscribe) {
+          stopListening();
+        }
+      };
+    },
+  };
+}
+
 /**
  * Subscribes to draft presence for a collection of threads without mounting a
  * hook per row. The primitive bit-string snapshot stays referentially stable
- * for `useSyncExternalStore`; the returned set changes only when draft presence
- * changes or the supplied thread collection changes.
+ * for `useSyncExternalStore`; each notification checks only the changed key,
+ * and the returned set changes only when draft presence changes or the supplied
+ * thread collection changes.
  */
 export function usePromptDraftInputThreadIds(
   threads: readonly PromptDraftThreadRef[],
@@ -452,29 +504,13 @@ export function usePromptDraftInputThreadIds(
     return next;
   }, [threads]);
 
+  const presenceStore = useMemo(
+    () => createPromptDraftPresenceStore(subscriptions),
+    [subscriptions],
+  );
   const presenceSnapshot = useSyncExternalStore(
-    useCallback(
-      (listener) => {
-        const unsubscribe = subscriptions.map(({ storageKey }) =>
-          subscribePromptDraft(storageKey, listener),
-        );
-        return () => {
-          for (const stopListening of unsubscribe) {
-            stopListening();
-          }
-        };
-      },
-      [subscriptions],
-    ),
-    useCallback(
-      () =>
-        subscriptions
-          .map(({ storageKey }) =>
-            isPromptDraftEmpty(readPromptDraft(storageKey)) ? "0" : "1",
-          )
-          .join(""),
-      [subscriptions],
-    ),
+    presenceStore.subscribe,
+    presenceStore.getSnapshot,
     () => "",
   );
 
